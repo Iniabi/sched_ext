@@ -3,6 +3,7 @@
 #include <linux/of.h>
 #include <linux/slab.h>
 #include <linux/string.h>
+#include <linux/errno.h>
 
 static int __init hmbird_patch_init(void)
 {
@@ -12,70 +13,64 @@ static int __init hmbird_patch_init(void)
 
     ver_np = of_find_node_by_path("/soc/oplus,hmbird/version_type");
     if (!ver_np) {
-        pr_info("hmbird_patch: version_type node not found\n");
+        pr_debug("hmbird_patch: version_type node not found\n");
         return 0;
     }
 
     ret = of_property_read_string(ver_np, "type", &type);
     if (ret) {
-        pr_info("hmbird_patch: type property not found\n");
-        of_node_put(ver_np);
-        return 0;
+        pr_debug("hmbird_patch: type property not found\n");
+        goto out_put_node;
     }
 
-    if (strcmp(type, "HMBIRD_OGKI")) {
-        of_node_put(ver_np);
-        return 0;
+    if (strcmp(type, "HMBIRD_OGKI") != 0) {
+        pr_debug("hmbird_patch: type is %s\n", type);
+        goto out_put_node;
     }
 
-    struct property *prop = of_find_property(ver_np, "type", NULL);
-    if (!prop) {
-        pr_info("hmbird_patch: type property structure not found\n");
-        of_node_put(ver_np);
-        return 0;
-    }
-
-    struct property *new_prop = kmalloc(sizeof(*new_prop), GFP_KERNEL);
+    struct property *new_prop = kzalloc(sizeof(*new_prop), GFP_KERNEL);
     if (!new_prop) {
-        pr_err("hmbird_patch: kmalloc for new_prop failed\n");
-        of_node_put(ver_np);
-        return -ENOMEM;
+        pr_err("hmbird_patch: property alloc failed\n");
+        ret = -ENOMEM;
+        goto out_put_node;
     }
 
-    new_prop->name = prop->name;
-    new_prop->length = strlen("HMBIRD_GKI") + 1;
-    new_prop->value = kmalloc(new_prop->length, GFP_KERNEL);
+    new_prop->name = kstrdup("type", GFP_KERNEL);
+    if (!new_prop->name) {
+        pr_err("hmbird_patch: name alloc failed\n");
+        ret = -ENOMEM;
+        goto out_free_prop;
+    }
+
+    new_prop->value = kstrdup("HMBIRD_GKI", GFP_KERNEL);
     if (!new_prop->value) {
-        pr_err("hmbird_patch: kmalloc for new_prop->value failed\n");
-        kfree(new_prop);
-        of_node_put(ver_np);
-        return -ENOMEM;
+        pr_err("hmbird_patch: value alloc failed\n");
+        ret = -ENOMEM;
+        goto out_free_name;
+    }
+    new_prop->length = strlen("HMBIRD_GKI") + 1;
+
+    ret = of_update_property(ver_np, new_prop);
+    if (ret) {
+        pr_err("hmbird_patch: update failed: %d\n", ret);
+        goto out_free_value;
     }
 
-    strcpy(new_prop->value, "HMBIRD_GKI");
+    pr_info("hmbird_patch: updated to HMBIRD_GKI\n");
+    goto out_put_node;
 
-    if (of_remove_property(ver_np, prop) != 0) {
-        pr_err("hmbird_patch: of_remove_property failed\n");
-        kfree(new_prop->value);
-        kfree(new_prop);
-        of_node_put(ver_np);
-        return -EIO;
-    }
-
-    if (of_add_property(ver_np, new_prop) != 0) {
-        pr_err("hmbird_patch: of_add_property failed\n");
-        kfree(new_prop->value);
-        kfree(new_prop);
-        of_node_put(ver_np);
-        return -EIO;
-    }
-
-    pr_info("hmbird_patch: successfully converted from HMBIRD_OGKI to HMBIRD_GKI\n");
+out_free_value:
+    kfree(new_prop->value);
+out_free_name:
+    kfree(new_prop->name);
+out_free_prop:
+    kfree(new_prop);
+out_put_node:
     of_node_put(ver_np);
-    return 0;
+    return ret;
 }
 
 early_initcall(hmbird_patch_init);
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("reigadegr");
-MODULE_DESCRIPTION("Forcefully convert HMBIRD_OGKI to HMBIRD_GKI.");
+MODULE_DESCRIPTION("Convert HMBIRD_OGKI to HMBIRD_GKI");
